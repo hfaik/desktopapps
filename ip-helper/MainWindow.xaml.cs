@@ -10,7 +10,9 @@ public partial class MainWindow : Window
 {
     enum Mode { Passive, Verify, Full }
 
-    readonly List<NetInfo> nets = new();
+    readonly System.Collections.ObjectModel.ObservableCollection<NetInfo> nets = new();
+    static readonly string NetFile = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "IpHelper", "networks.json");
     readonly Dictionary<uint, HostEntry> hosts = new();
     readonly System.Collections.ObjectModel.ObservableCollection<HostEntry> used = new();
     readonly DispatcherTimer timer = new();
@@ -27,10 +29,47 @@ public partial class MainWindow : Window
 
     void Window_Loaded(object sender, RoutedEventArgs e)
     {
-        nets.AddRange(NetInfo.Discover());
+        foreach (var n in NetInfo.Discover()) nets.Add(n);
         netList.ItemsSource = nets;
-        Log($"{nets.Count} ağ bulundu.");
-        if (nets.Count == 0) status.Text = "Taranabilir ağ bulunamadı.";
+        int found = nets.Count;
+        try
+        {
+            if (File.Exists(NetFile))
+                foreach (var cidr in System.Text.Json.JsonSerializer.Deserialize<List<string>>(File.ReadAllText(NetFile)) ?? new())
+                    if (NetInfo.TryCreateCustom(cidr, nets, out _) is { } c) nets.Add(c);
+        }
+        catch (Exception ex) { Log("Kayıtlı ağlar okunamadı: " + ex.Message); }
+        Log($"{found} ağ otomatik bulundu (işaretsiz), {nets.Count - found} kayıtlı özel ağ yüklendi.");
+        status.Text = "Taranacak ağları sen belirle: listeden işaretle ya da aşağıdan kendi ağını ekle.";
+    }
+
+    void SaveCustomNets()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(NetFile)!);
+            File.WriteAllText(NetFile, System.Text.Json.JsonSerializer.Serialize(nets.Where(n => n.Custom).Select(n => n.Cidr).ToList()));
+        }
+        catch (Exception ex) { Log("Ağlar kaydedilemedi: " + ex.Message); }
+    }
+
+    void AddNet_Click(object sender, RoutedEventArgs e)
+    {
+        var net = NetInfo.TryCreateCustom(txtCidr.Text, nets, out string err);
+        if (net == null) { status.Text = err; return; }
+        nets.Add(net);
+        txtCidr.Clear();
+        SaveCustomNets();
+        Log($"Ağ eklendi: {net.Label}");
+        status.Text = "Ağ eklendi.";
+    }
+
+    void RemoveNet_Click(object sender, RoutedEventArgs e)
+    {
+        if (((FrameworkElement)sender).Tag is not NetInfo net || busy) return;
+        nets.Remove(net);
+        SaveCustomNets();
+        Log($"Ağ silindi: {net.Cidr}");
     }
 
     void Window_Closing(object? sender, System.ComponentModel.CancelEventArgs e) => cts?.Cancel();
@@ -85,16 +124,19 @@ public partial class MainWindow : Window
                 if (targets != null)
                 {
                     UpdateStatus($"{net.Cidr} taranıyor...");
-                    var probed = await Scanner.ProbeAsync(net, targets, () =>
+                    Action onProbe = () =>
                     {
                         int n = Interlocked.Increment(ref sessionProbes);
                         if (n % 10 == 0) Dispatcher.BeginInvoke(() => UpdateStatus($"{net.Cidr} taranıyor..."));
-                    }, ct);
+                    };
+                    var probed = net.UseIcmp
+                        ? await Scanner.ProbeIcmpAsync(targets, onProbe, ct)
+                        : await Scanner.ProbeAsync(net, targets, onProbe, ct);
                     foreach (var kv in probed) found[kv.Key] = kv.Value;
                     if (mode == Mode.Full) net.LastFullSweep = DateTime.Now;
                 }
 
-                found[net.LocalIp] = net.LocalMac;
+                if (net.LocalIp != 0) found[net.LocalIp] = net.LocalMac;
                 Apply(net, found, mode != Mode.Passive, added);
             }
 

@@ -14,6 +14,8 @@ public static class IpUtil
         return ((uint)b[0] << 24) | ((uint)b[1] << 16) | ((uint)b[2] << 8) | b[3];
     }
 
+    public static IPAddress ToAddr(uint v) => new(new[] { (byte)(v >> 24), (byte)(v >> 16), (byte)(v >> 8), (byte)v });
+
     public static string ToStr(uint v) => $"{v >> 24}.{(v >> 16) & 255}.{(v >> 8) & 255}.{v & 255}";
 
     public static uint ToNative(uint v) => System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(v);
@@ -76,8 +78,12 @@ public class NetInfo
     public bool Selected { get; set; }
     public DateTime? LastFullSweep { get; set; }
 
+    public bool Custom { get; init; }
+    public bool UseIcmp { get; init; }
+
     public long HostCount => (1L << (32 - Prefix)) - 2;
-    public bool Supported => ArpCapable && HostCount <= MaxHosts;
+    public long Limit => Custom ? 4094 : MaxHosts; // özel ağlar /20'ye kadar
+    public bool Supported => (ArpCapable || UseIcmp) && HostCount <= Limit;
     public string Cidr => $"{IpUtil.ToStr(Network)}/{Prefix}";
 
     public string Label
@@ -85,10 +91,53 @@ public class NetInfo
         get
         {
             var s = $"{Cidr}  ({Name}, {HostCount} adres)";
+            if (HostCount > Limit) return s + " - çok büyük, atlanır";
+            if (UseIcmp) return s + " - yönlendirmeli ağ: ping ile taranır, MAC görünmez";
             if (!ArpCapable) return s + " - ARP desteklenmiyor, atlanır";
-            if (HostCount > MaxHosts) return s + " - çok büyük, atlanır";
             return s;
         }
+    }
+
+    /// <summary>
+    /// Kullanıcının yazdığı CIDR'dan ağ üretir. Ağ makinenin doğrudan bağlı olduğu bir alt ağın içindeyse ARP,
+    /// değilse (yönlendirmeli ağ) ping kullanılır.
+    /// </summary>
+    public static NetInfo? TryCreateCustom(string text, IEnumerable<NetInfo> existing, out string error)
+    {
+        error = "";
+        var parts = text.Trim().Split('/');
+        if (parts.Length != 2 || !IpUtil.TryParse(parts[0].Trim(), out uint ip) || !int.TryParse(parts[1], out int prefix))
+        {
+            error = "Biçim: 10.6.2.0/24";
+            return null;
+        }
+        if (prefix < 20 || prefix > 30)
+        {
+            error = "Önek uzunluğu 20 ile 30 arasında olmalı (en çok 4094 adres).";
+            return null;
+        }
+        uint mask = uint.MaxValue << (32 - prefix);
+        uint net = ip & mask, bc = net | ~mask;
+        if (existing.Any(x => x.Network == net && x.Prefix == prefix))
+        {
+            error = "Bu ağ listede zaten var.";
+            return null;
+        }
+
+        var local = existing.FirstOrDefault(l => !l.Custom && l.ArpCapable && l.Network <= net && bc <= l.Broadcast);
+        return new NetInfo
+        {
+            Name = local?.Name ?? "özel",
+            LocalIp = local?.LocalIp ?? 0,
+            LocalMac = local?.LocalMac ?? "",
+            Prefix = prefix,
+            Network = net,
+            Broadcast = bc,
+            ArpCapable = local != null,
+            UseIcmp = local == null,
+            Custom = true,
+            Selected = true,
+        };
     }
 
     public bool Contains(uint ip) => ip > Network && ip < Broadcast;
@@ -135,8 +184,7 @@ public class NetInfo
                     ArpCapable = arp,
                 };
                 if (!seen.Add(n.Cidr)) continue;
-                n.Selected = n.Supported;
-                list.Add(n);
+                list.Add(n); // otomatik bulunan ağlar işaretsiz gelir: ne taranacağına kullanıcı karar verir
             }
         }
         return list;

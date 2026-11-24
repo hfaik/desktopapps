@@ -90,6 +90,40 @@ public static class Scanner
         return new Dictionary<uint, string>(found);
     }
 
+    /// <summary>Yönlendirmeli ağlar için: adres başına tek, 1 baytlık ICMP echo. Aynı hız sınırı geçerli.</summary>
+    public static async Task<Dictionary<uint, string>> ProbeIcmpAsync(
+        IEnumerable<uint> targets, Action onProbe, CancellationToken ct)
+    {
+        var found = new ConcurrentDictionary<uint, string>();
+        using var gate = new SemaphoreSlim(MaxParallel);
+        var tasks = new List<Task>();
+        try
+        {
+            foreach (uint target in targets)
+            {
+                await gate.WaitAsync(ct);
+                await Task.Delay(SpacingMs, ct);
+                tasks.Add(Task.Run(async () =>
+                {
+                    try
+                    {
+                        using var ping = new System.Net.NetworkInformation.Ping();
+                        var r = await ping.SendPingAsync(IpUtil.ToAddr(target), 800, new byte[1]);
+                        onProbe();
+                        if (r.Status == System.Net.NetworkInformation.IPStatus.Success) found[target] = "";
+                    }
+                    catch { onProbe(); }
+                    finally { gate.Release(); }
+                }, CancellationToken.None));
+            }
+        }
+        finally
+        {
+            await Task.WhenAll(tasks);
+        }
+        return new Dictionary<uint, string>(found);
+    }
+
     public static async Task<string> ResolveNameAsync(uint ip)
     {
         try

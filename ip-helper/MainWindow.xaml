@@ -3,6 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="IP Helper" Height="660" Width="1020" MinHeight="480" MinWidth="760"
         Loaded="Window_Loaded" Closing="Window_Closing">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </Window.Resources>
     <Grid Margin="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -32,13 +35,24 @@
         </WrapPanel>
 
         <GroupBox Grid.Row="1" Header="Ağlar (işaretliler taranır)" Padding="6" Margin="0,0,0,8">
-            <ItemsControl x:Name="netList">
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate>
-                        <CheckBox IsChecked="{Binding Selected}" IsEnabled="{Binding Supported}" Content="{Binding Label}" Margin="0,2"/>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
+            <StackPanel>
+                <ItemsControl x:Name="netList">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal" Margin="0,2">
+                                <CheckBox IsChecked="{Binding Selected}" IsEnabled="{Binding Supported}" Content="{Binding Label}" VerticalAlignment="Center"/>
+                                <Button Content="Sil" Tag="{Binding}" Click="RemoveNet_Click" Margin="10,0,0,0" Padding="8,0"
+                                        Visibility="{Binding Custom, Converter={StaticResource BoolToVis}}"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                    <TextBlock Text="Ağ ekle (CIDR):" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <TextBox x:Name="txtCidr" Width="150" VerticalContentAlignment="Center" ToolTip="Örn: 10.6.2.0/24 (önek 20-30)"/>
+                    <Button Content="Ekle" Padding="12,2" Margin="6,0,0,0" Click="AddNet_Click" IsDefault="False"/>
+                </StackPanel>
+            </StackPanel>
         </GroupBox>
 
         <TextBlock Grid.Row="2" x:Name="freeNote" Margin="0,0,0,6" TextWrapping="Wrap" Foreground="#555"
